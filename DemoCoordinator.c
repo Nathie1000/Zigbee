@@ -56,6 +56,8 @@
 #include "hal_adc.h"
 #include "DemoApp.h"
 #include "Console.h"
+#include "Clusters.h"
+#include "Lamp.h"
 
 /******************************************************************************
  * CONSTANTS
@@ -137,14 +139,20 @@ static void sendGtwReport(gtwData_t *gtwData);
  */
 
 // Inputs and Outputs for Collector device
-#define NUM_OUT_CMD_COLLECTOR           0
+#define NUM_OUT_CMD_COLLECTOR           2
 #define NUM_IN_CMD_COLLECTOR            2
 
 // List of output and input commands for Collector device
 const cId_t zb_InCmdList[NUM_IN_CMD_COLLECTOR] =
 {
-  SENSOR_REPORT_CMD_ID,
-  SENSOR_BUTTON_CMD_ID
+  LOCK_DATA_CMD_ID,
+  LAMP_DATA_CMD_ID
+};
+
+const cId_t zb_OutCmdList[NUM_IN_CMD_COLLECTOR] =
+{
+  LOCK_DATA_CMD_ID,
+  LAMP_DATA_CMD_ID
 };
 
 // Define SimpleDescriptor for Collector device
@@ -158,7 +166,7 @@ const SimpleDescriptionFormat_t zb_SimpleDesc =
   NUM_IN_CMD_COLLECTOR,       //  Number of Input Commands
   (cId_t *) zb_InCmdList,     //  Input Command List
   NUM_OUT_CMD_COLLECTOR,      //  Number of Output Commands
-  (cId_t *) NULL              //  Output Command List
+  (cId_t *) zb_OutCmdList     //  Output Command List
 };
 
 
@@ -196,11 +204,6 @@ void zb_HandleOsalEvent( uint16 event )
     // Start the device
     zb_StartRequest();
   }
-
-  if ( event & MY_START_EVT )
-  {
-    zb_StartRequest();
-  }
 }
 
 /******************************************************************************
@@ -221,14 +224,14 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
 {
   if ( keys & HAL_KEY_SW_1 ){
     MCU_IO_SET_LOW(0,4);
+    sendStatus(LAMP_DATA_CMD_ID, 0);
   }
   
   if ( keys & HAL_KEY_SW_2 ) {
+    sendStatus(LAMP_DATA_CMD_ID, 1);
     uint16 val = HalAdcRead(HAL_ADC_CHANNEL_0, HAL_ADC_RESOLUTION_12);
     print("LDR = ");
     println(itoa(val));
-    
-    MCU_IO_SET_HIGH(0,4);
   }
 }
 
@@ -243,7 +246,7 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
  * @return      none
  */
 void initApp(void){
-   MCU_IO_DIR_OUTPUT(0,4);
+    initLamp(0,4);
 }
 
 
@@ -259,12 +262,11 @@ void initApp(void){
  *
  * @return      none
  */
-void zb_StartConfirm( uint8 status )
-{
+void zb_StartConfirm( uint8 status ){
   // If the device sucessfully started, change state to running
   if ( status == ZB_SUCCESS )
   {
-     println("System START SUCCESS");
+    println("System START SUCCESS");
     // Set LED 1 to indicate that node is operational on the network
     HalLedSet( HAL_LED_1, HAL_LED_MODE_ON );
     
@@ -272,15 +274,9 @@ void zb_StartConfirm( uint8 status )
     zb_AllowBind( 0xFF );
     HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
     println("System Ready to bind");
-
-    // Change application state
-    //appState = APP_START;
   }
-  else
-  {
+  else{
      println("System START FAIL");
-    // Try again later with a delay
-    osal_start_timerEx( sapi_TaskID, MY_START_EVT, myStartRetryDelay );
   }
 }
 
@@ -295,8 +291,7 @@ void zb_StartConfirm( uint8 status )
  *
  * @return      none
  */
-void zb_SendDataConfirm( uint8 handle, uint8 status )
-{
+void zb_SendDataConfirm( uint8 handle, uint8 status ){
   (void)handle;
   (void)status;
 }
@@ -312,17 +307,17 @@ void zb_SendDataConfirm( uint8 handle, uint8 status )
  *
  * @return      none
  */
-void zb_BindConfirm( uint16 commandId, uint8 status )
-{
-  
+void zb_BindConfirm( uint16 commandId, uint8 status ){
   print("System Bind confirmed (commandID = ");
   print(itoa(commandId));
   print(" status = ");
   print(itoa(status));
   println(")");
   
-  (void)commandId;
-  (void)status;
+  if(status != ZB_SUCCESS){
+    bindDevice(commandId);
+  }
+ 
 }
 
 /******************************************************************************
@@ -334,8 +329,7 @@ void zb_BindConfirm( uint16 commandId, uint8 status )
  *
  * @return      none
  */
-void zb_AllowBindConfirm( uint16 source )
-{
+void zb_AllowBindConfirm( uint16 source ){
   print("System Allow Bind confirmed (source = ");
   print(itoa(source));
   println(")");
@@ -354,8 +348,7 @@ void zb_AllowBindConfirm( uint16 source )
  *
  * @return      none
  */
-void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result )
-{
+void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result ){
   (void)searchType;
   (void)searchKey;
   (void)result;
@@ -384,38 +377,29 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
   print(pData);
   println(")");
   
-  if(command == SENSOR_REPORT_CMD_ID){
-    (void)len;
-
-    gtwData.parent = BUILD_UINT16(pData[SENSOR_PARENT_OFFSET+ 1], pData[SENSOR_PARENT_OFFSET]);
-    gtwData.source = source;
-    gtwData.temp = *pData;
-    gtwData.voltage = *(pData+1);
-
-    // Flash LED 2 once to indicate data reception
-    HalLedSet ( HAL_LED_2, HAL_LED_MODE_FLASH );
-  
-    //MCU_IO_SET_HIGH(0, 4);
-
-    // Send gateway report
-    //sendGtwReport(&gtwData);
-    //println("");
+  if(isBindBackRequest(pData)){
+    bindDevice(command);
   }
-  else if(command == SENSOR_BUTTON_CMD_ID){
-    //println("Toggle LED");
-    static bool isOn = false;
-    if(isOn){
-      MCU_IO_SET_HIGH(0,4);
+  else if(isStatusRequest(pData)){
+    uint8 status = 0;
+    
+    if(isLockDataCommand(command)){
+      //TODO: Get real door status
     }
-    else{
-      MCU_IO_SET_LOW(0,4);
+    else if(isLampDataCommand(command)){
+      //TODO: Get real lamp status
     }
-    isOn = !isOn;
+    sendStatus(command, status);  
+  }
+  else if(isButtonPressedRequest(pData)){
+     if(isLockDataCommand(command)){
+       //TODO: Open/Close door
+    }
+    else if(isLampDataCommand(command)){
+       //TODO: Turn On/Off lamp
+    }
     
   }
-  
-  
-  
 }
 
 /******************************************************************************
@@ -428,8 +412,7 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
  *
  * @return      none
  */
-void uartRxCB( uint8 port, uint8 event )
-{
+void uartRxCB( uint8 port, uint8 event ){
   (void)port;
 
   uint8 pBuf[RX_BUF_LEN];

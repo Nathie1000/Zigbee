@@ -47,8 +47,6 @@
 
 #ifndef DEMO_APP_H
 #define DEMO_APP_H
-#define RFD_RCVC_ALWAYS_ON TRUE
-
 
 /******************************************************************************
  * CONSTANTS
@@ -67,8 +65,6 @@
 // Define the Command ID's used in this application
 #define SENSOR_REPORT_CMD_ID              2
 #define DUMMY_REPORT_CMD_ID               3
-#define SENSOR_BUTTON_CMD_ID              4
-#define SENSOR_LED_CMD_ID                 5
 
 // Sensor report data format
 #define SENSOR_TEMP_OFFSET                0
@@ -78,10 +74,10 @@
 
 #define RX_BUF_LEN                        128
 
+
 /******************************************************************************
  * PUBLIC FUNCTIONS
  */
-
 void uartRxCB( uint8 port, uint8 event );
 void initUart(halUARTCBack_t pf);
 void initApp(void);
