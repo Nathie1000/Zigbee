@@ -58,16 +58,6 @@
  * CONSTANTS
  */
 
-// ADC definitions for CC2430/CC2530 from the hal_adc.c file
-#if defined (HAL_MCU_CC2530)
-#define HAL_ADC_REF_125V    0x00    /* Internal 1.25V Reference */
-#define HAL_ADC_DEC_064     0x00    /* Decimate by 64 : 8-bit resolution */
-#define HAL_ADC_DEC_128     0x10    /* Decimate by 128 : 10-bit resolution */
-#define HAL_ADC_DEC_512     0x30    /* Decimate by 512 : 14-bit resolution */
-#define HAL_ADC_CHN_VDD3    0x0f    /* Input channel: VDD/3 */
-#define HAL_ADC_CHN_TEMP    0x0e    /* Temperature sensor */
-#endif // HAL_MCU_CC2530
-
 /******************************************************************************
  * TYPEDEFS
  */
@@ -124,11 +114,7 @@ const SimpleDescriptionFormat_t zb_SimpleDesc =
  *
  * @return      none
  */
-void zb_HandleOsalEvent( uint16 event )
-{
-  if( event & SYS_EVENT_MSG ){
-  }
-
+void zb_HandleOsalEvent( uint16 event ){
   if( event & ZB_ENTRY_EVENT ) {
     // blind LED 1 to indicate joining a network
     initApp();
@@ -160,7 +146,9 @@ void initApp(void){
  * @return  none
  */
 void zb_HandleKeys( uint8 shift, uint8 keys ){
+  //Test for press on key 2.
   if( keys & HAL_KEY_SW_2 ) {
+    //Send a data request to bound device indicating button pressed.
     sendButtonPressedRequest(LAMP_DATA_CMD_ID);
   }
 }
@@ -178,13 +166,13 @@ void zb_HandleKeys( uint8 shift, uint8 keys ){
  * @return      none
  */
 void zb_StartConfirm( uint8 status ){
-  // If the device sucessfully started, change state to running
+  //If the device sucessfully started.
   if ( status == ZB_SUCCESS ) { 
-    // Set LED 1 to indicate that node is operational on the network
+    //Set LED 1 to indicate that node is operational on the network.
     HalLedSet(HAL_LED_1, HAL_LED_MODE_ON );
-    // blink LED 2 to indicate discovery and binding
+    //Blink LED 2 to indicate discovery and binding.
     HalLedBlink( HAL_LED_2, 0, 50, 500 );
-    // Find and bind to a collector device
+    //Find and bind to a collector device.
     bindDevice(LAMP_DATA_CMD_ID);
   }
 }
@@ -218,13 +206,17 @@ void zb_SendDataConfirm( uint8 handle, uint8 status ){
  */
 void zb_BindConfirm( uint16 commandId, uint8 status ){
   if(isLampDataCommand(commandId)){
+    //Test if bind succeded.
     if(status == ZB_SUCCESS ) {
        HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
        HalLedBlink(HAL_LED_3, 0, 50, 500 );
+       //Allow this device to bind.
        zb_AllowBind( 0xFF );
+       //Request to other device to bind to this device.
        requestBindBack(LAMP_DATA_CMD_ID);
     }
     else{
+       //Try to bind again.
        bindDevice(LAMP_DATA_CMD_ID);
     }
   }
@@ -240,10 +232,12 @@ void zb_BindConfirm( uint16 commandId, uint8 status ){
  * @return      none
  */
 void zb_AllowBindConfirm( uint16 source ){
-   zb_AllowBind(0x00);
-   HalLedSet( HAL_LED_3, HAL_LED_MODE_ON );
-   requestStatus(LAMP_DATA_CMD_ID);
-   (void)source;
+  (void)source;
+  //Turn of bind mode, we only bind to 1 device ever.
+  zb_AllowBind(0x00);
+  HalLedSet( HAL_LED_3, HAL_LED_MODE_ON );
+  //Request the inital status of the lamp.
+  requestStatus(LAMP_DATA_CMD_ID);
 }
 
 /******************************************************************************
@@ -282,10 +276,10 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
   (void)source;
   (void)command;
   (void)len;
- 
+  //Test data respone.
   if(isStatusResponse(pData)){
-    uint8 s = getStatus(pData);
-    setLamp(s);
+    //Update the lamp status.
+    setLamp(getStatus(pData));
   }
 }
 

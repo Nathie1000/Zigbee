@@ -58,6 +58,7 @@
 #include "Console.h"
 #include "Clusters.h"
 #include "Lamp.h"
+#include "LightSensor.h"
 
 /******************************************************************************
  * CONSTANTS
@@ -100,39 +101,28 @@
 #define ZB_RECEIVE_DATA_INDICATION          0x8746
 
 // Application States
-#define APP_INIT                            0
-#define APP_START                           2
+
 
 // Application osal event identifiers
-#define MY_START_EVT                        0x0001
+#define LIGHT_SENSOR_TASK_EVENT         0x0001
+#define LIGHT_SENSOR_POLL_INTERVAL      1000
 
 /******************************************************************************
  * TYPEDEFS
  */
-typedef struct
-{
-  uint16              source;
-  uint16              parent;
-  uint8               temp;
-  uint8               voltage;
-} gtwData_t;
+
 
 /******************************************************************************
  * LOCAL VARIABLES
  */
+static bool isLightEndPointBound = FALSE;
 
-static uint8 appState =             APP_INIT;
-static uint8 myStartRetryDelay =    10;          // milliseconds
-static gtwData_t gtwData;
 
 /******************************************************************************
  * LOCAL FUNCTIONS
  */
 
-static uint8 calcFCS(uint8 *pBuf, uint8 len);
-static void sysPingReqRcvd(void);
-static void sysPingRsp(void);
-static void sendGtwReport(gtwData_t *gtwData);
+static void reportLightSensor(void);
 
 /******************************************************************************
  * GLOBAL VARIABLES
@@ -189,8 +179,7 @@ void zb_HandleOsalEvent( uint16 event )
   if( event & SYS_EVENT_MSG ){
   }
 
-  if( event & ZB_ENTRY_EVENT )
-  {
+  else if( event & ZB_ENTRY_EVENT ){
     // Initialise UART
     initUart(uartRxCB);
     initApp();
@@ -204,6 +193,11 @@ void zb_HandleOsalEvent( uint16 event )
     // Start the device
     zb_StartRequest();
   }
+  else if(event & LIGHT_SENSOR_TASK_EVENT){
+    reportLightSensor();
+    osal_start_timerEx( sapi_TaskID, LIGHT_SENSOR_TASK_EVENT, LIGHT_SENSOR_POLL_INTERVAL);
+  }
+  
 }
 
 /******************************************************************************
@@ -229,9 +223,12 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
   
   if ( keys & HAL_KEY_SW_2 ) {
     sendStatus(LAMP_DATA_CMD_ID, 1);
-    uint16 val = HalAdcRead(HAL_ADC_CHANNEL_0, HAL_ADC_RESOLUTION_12);
+    uint16 val = HalAdcRead(HAL_ADC_CHANNEL_3, HAL_ADC_RESOLUTION_12);
     print("LDR = ");
     println(itoa(val));
+    
+    print("Light level: ");
+    println(itoa(isLightLevelLow()));
   }
 }
 
@@ -247,8 +244,8 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
  */
 void initApp(void){
     initLamp(0,4);
+    initLightSensor(3,1000);
 }
-
 
 /******************************************************************************
  * @fn          zb_StartConfirm
@@ -264,8 +261,7 @@ void initApp(void){
  */
 void zb_StartConfirm( uint8 status ){
   // If the device sucessfully started, change state to running
-  if ( status == ZB_SUCCESS )
-  {
+  if ( status == ZB_SUCCESS ) {
     println("System START SUCCESS");
     // Set LED 1 to indicate that node is operational on the network
     HalLedSet( HAL_LED_1, HAL_LED_MODE_ON );
@@ -274,6 +270,9 @@ void zb_StartConfirm( uint8 status ){
     zb_AllowBind( 0xFF );
     HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
     println("System Ready to bind");
+    
+    
+    osal_start_timerEx( sapi_TaskID, LIGHT_SENSOR_TASK_EVENT, LIGHT_SENSOR_POLL_INTERVAL );
   }
   else{
      println("System START FAIL");
@@ -316,6 +315,14 @@ void zb_BindConfirm( uint16 commandId, uint8 status ){
   
   if(status != ZB_SUCCESS){
     bindDevice(commandId);
+  }
+  else{
+    if(isLampDataCommand(commandId)){
+      isLightEndPointBound = TRUE;
+    }
+    else if(isLockDataCommand(commandId)){
+      //TODO: Do somting if we need to confirm if we're bound.
+    }
   }
  
 }
@@ -387,7 +394,7 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
       //TODO: Get real door status
     }
     else if(isLampDataCommand(command)){
-      //TODO: Get real lamp status
+      status = isLampOn();
     }
     sendStatus(command, status);  
   }
@@ -396,7 +403,9 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
        //TODO: Open/Close door
     }
     else if(isLampDataCommand(command)){
-       //TODO: Turn On/Off lamp
+      bool isLampOn = isLightLevelLow();
+      sendStatus(command, isLampOn);
+      setLamp(isLampOn);
     }
     
   }
@@ -414,143 +423,28 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
  */
 void uartRxCB( uint8 port, uint8 event ){
   (void)port;
+  (void)event;
+}
 
-  uint8 pBuf[RX_BUF_LEN];
-  uint16 cmd;
-  uint16 len;
 
-  if ( event != HAL_UART_TX_EMPTY )
-  {
-    // Read from UART
-    len = HalUARTRead( HAL_UART_PORT_0, pBuf, RX_BUF_LEN );
+void reportLightSensor(){
 
-    if ( len > 0 )
-    {
-      cmd = BUILD_UINT16(pBuf[SYS_PING_CMD_OFFSET + 1], pBuf[SYS_PING_CMD_OFFSET]);
-
-      if( (pBuf[FRAME_SOF_OFFSET] == CPT_SOP) && (cmd == SYS_PING_REQUEST) )
-      {
-        sysPingReqRcvd();
+   //println("LIGHT SENSOR Reporting");
+   bool isLightLevelHigh = !isLightLevelLow();
+   
+   //Test if the lamp is on.
+   //No need to do anyting if it's alrdy off.
+   if(isLampOn()){
+      //Test if the lamp needs to be turned off.
+      if(isLightLevelHigh){
+        //Turn off lamp.
+        setLamp(0);
+         //We only need to send if there is a device bound that we can send too.
+         if(isLightEndPointBound){
+           sendStatus(LAMP_DATA_CMD_ID, 0);
+         }
       }
-    }
-  }
+   }
 }
 
-/******************************************************************************
- * @fn          sysPingReqRcvd
- *
- * @brief       Ping request received
- *
- * @param       none
- *
- * @return      none
- */
-static void sysPingReqRcvd(void)
-{
-   sysPingRsp();
-}
 
-/******************************************************************************
- * @fn          sysPingRsp
- *
- * @brief       Build and send Ping response
- *
- * @param       none
- *
- * @return      none
- */
-static void sysPingRsp(void)
-{
-  uint8 pBuf[SYS_PING_RSP_LENGTH];
-
-  // Start of Frame Delimiter
-  pBuf[FRAME_SOF_OFFSET] = CPT_SOP;
-
-  // Length
-  pBuf[FRAME_LENGTH_OFFSET] = 2;
-
-  // Command type
-  pBuf[FRAME_CMD0_OFFSET] = LO_UINT16(SYS_PING_RESPONSE);
-  pBuf[FRAME_CMD1_OFFSET] = HI_UINT16(SYS_PING_RESPONSE);
-
-  // Stack profile
-  pBuf[FRAME_DATA_OFFSET] = LO_UINT16(STACK_PROFILE);
-  pBuf[FRAME_DATA_OFFSET + 1] = HI_UINT16(STACK_PROFILE);
-
-  // Frame Check Sequence
-  pBuf[SYS_PING_RSP_LENGTH - 1] = calcFCS(&pBuf[FRAME_LENGTH_OFFSET], (SYS_PING_RSP_LENGTH - 2));
-
-  // Write frame to UART
-  HalUARTWrite(HAL_UART_PORT_0,pBuf, SYS_PING_RSP_LENGTH);
-}
-
-/******************************************************************************
- * @fn          sendGtwReport
- *
- * @brief       Build and send gateway report
- *
- * @param       none
- *
- * @return      none
- */
-static void sendGtwReport(gtwData_t *gtwData)
-{
-  uint8 pFrame[ZB_RECV_LENGTH];
-
-  // Start of Frame Delimiter
-  pFrame[FRAME_SOF_OFFSET] = CPT_SOP; // Start of Frame Delimiter
-
-  // Length
-  pFrame[FRAME_LENGTH_OFFSET] = 10;
-
-  // Command type
-  pFrame[FRAME_CMD0_OFFSET] = LO_UINT16(ZB_RECEIVE_DATA_INDICATION);
-  pFrame[FRAME_CMD1_OFFSET] = HI_UINT16(ZB_RECEIVE_DATA_INDICATION);
-
-  // Source address
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_SRC_OFFSET] = LO_UINT16(gtwData->source);
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_SRC_OFFSET+ 1] = HI_UINT16(gtwData->source);
-
-  // Command ID
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_CMD_OFFSET] = LO_UINT16(SENSOR_REPORT_CMD_ID);
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_CMD_OFFSET+ 1] = HI_UINT16(SENSOR_REPORT_CMD_ID);
-
-  // Length
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_LEN_OFFSET] = LO_UINT16(4);
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_LEN_OFFSET+ 1] = HI_UINT16(4);
-
-  // Data
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_DATA_OFFSET] = gtwData->temp;
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_DATA_OFFSET+ 1] = gtwData->voltage;
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_DATA_OFFSET+ 2] = LO_UINT16(gtwData->parent);
-  pFrame[FRAME_DATA_OFFSET + ZB_RECV_DATA_OFFSET+ 3] = HI_UINT16(gtwData->parent);
-
-  // Frame Check Sequence
-  pFrame[ZB_RECV_LENGTH - 1] = calcFCS(&pFrame[FRAME_LENGTH_OFFSET], (ZB_RECV_LENGTH - 2) );
-
-  // Write report to UART
-  HalUARTWrite(HAL_UART_PORT_0,pFrame, ZB_RECV_LENGTH);
-}
-
-/******************************************************************************
- * @fn          calcFCS
- *
- * @brief       This function calculates the FCS checksum for the serial message
- *
- * @param       pBuf - Pointer to the end of a buffer to calculate the FCS.
- *              len - Length of the pBuf.
- *
- * @return      The calculated FCS.
- ******************************************************************************
- */
-static uint8 calcFCS(uint8 *pBuf, uint8 len)
-{
-  uint8 rtrn = 0;
-
-  while ( len-- )
-  {
-    rtrn ^= *pBuf++;
-  }
-
-  return rtrn;
-}

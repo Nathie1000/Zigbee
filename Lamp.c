@@ -3,6 +3,7 @@
 
 static uint8 lampPort = 0;
 static uint8 lampPin  = 1;
+static bool lampStatus = FALSE;
 
 /* Little explanation about what is happening here.
 *  Some brain damaged idiot found it funny to define the IO function to control the
@@ -40,9 +41,14 @@ void initLamp(uint8 port, uint8 pin){
     case 7 : MCU_IO_DIR_OUTPUT(1, 7); break;
     }
   }
+  
+  //Turn lamp default to the defualt setting.
+  setLamp(lampStatus);
 }
 
 void setLamp(bool onOff){
+    lampStatus = onOff;
+  
     if(lampPort == 0){
     switch(lampPin){
     case 0 : MCU_IO_SET(0, 0, onOff); break;
@@ -67,4 +73,8 @@ void setLamp(bool onOff){
     case 7 : MCU_IO_SET(1, 7, onOff); break;
     }
   }
+}
+
+bool isLampOn(){
+  return lampStatus;
 }
