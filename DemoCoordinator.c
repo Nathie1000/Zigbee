@@ -105,8 +105,8 @@
 
 
 // Application osal event identifiers
-#define LIGHT_SENSOR_TASK_EVENT         0x0001
-#define LIGHT_SENSOR_POLL_INTERVAL      1000
+#define SENSOR_TASK_EVENT         0x0001
+#define SENSOR_POLL_INTERVAL      1000
 
 /******************************************************************************
  * TYPEDEFS
@@ -177,18 +177,13 @@ const SimpleDescriptionFormat_t zb_SimpleDesc =
  *
  * @return      none
  */
-void zb_HandleOsalEvent( uint16 event )
-{
-  if( event & SYS_EVENT_MSG ){
-  }
-
-  else if( event & ZB_ENTRY_EVENT ){
+void zb_HandleOsalEvent( uint16 event ){
+  if( event & ZB_ENTRY_EVENT ){
     // Initialise UART
     initUart(uartRxCB);
     initApp();
     
     println("System ENTRY");
-
     // blind LED 1 to indicate starting/joining a network
     HalLedBlink ( HAL_LED_1, 0, 50, 500 );
     HalLedSet( HAL_LED_2, HAL_LED_MODE_OFF );
@@ -196,11 +191,11 @@ void zb_HandleOsalEvent( uint16 event )
     // Start the device
     zb_StartRequest();
   }
-  else if(event & LIGHT_SENSOR_TASK_EVENT){
+  else if(event & SENSOR_TASK_EVENT){
     reportLightSensor();
-    osal_start_timerEx( sapi_TaskID, LIGHT_SENSOR_TASK_EVENT, LIGHT_SENSOR_POLL_INTERVAL);
+    reportLockStatus();
+    osal_start_timerEx( sapi_TaskID, SENSOR_TASK_EVENT, SENSOR_POLL_INTERVAL);
   }
-  
 }
 
 /******************************************************************************
@@ -218,28 +213,25 @@ void zb_HandleOsalEvent( uint16 event )
  * @return  none
  */
 void zb_HandleKeys( uint8 shift, uint8 keys ){
-  static uint8 x = 0;
-  
-  if ( keys & HAL_KEY_SW_1 ){
-    x = !x;
-    setLock(x);
-    
-  }
-  
+  //Print some debug info when key 2 is pressed.
   if ( keys & HAL_KEY_SW_2 ) {
     uint16 val = HalAdcRead(HAL_ADC_CHANNEL_3, HAL_ADC_RESOLUTION_12);
     print("LDR = ");
     println(itoa(val));
     print("Light level: ");
     println(itoa(isLightLevelLow()));
+    print("LOCK = ");
+    println(itoa(isLockOpen()));
+    println("*************************");
   }
 }
 
 /******************************************************************************
  * @fn          initApp
  *
- * @brief       Initial function call to initialize the application this function
- *              is triggerd after the ZB_ENTRY_EVENT OS call.
+ * @brief       Initial function call to initialize the application. 
+ *              This function is called after the ZB_ENTRY_EVENT OS call.
+ *              
  * @param       none
  *                    
  *                      
@@ -270,16 +262,17 @@ void zb_StartConfirm( uint8 status ){
     // Set LED 1 to indicate that node is operational on the network
     HalLedSet( HAL_LED_1, HAL_LED_MODE_ON );
     
-    // Turn ON Allow Bind mode infinitly
+    // Turn ON Allow Bind mode infinitly.
     zb_AllowBind( 0xFF );
     HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
     println("System Ready to bind");
     
-    
-    osal_start_timerEx( sapi_TaskID, LIGHT_SENSOR_TASK_EVENT, LIGHT_SENSOR_POLL_INTERVAL );
+    //Start the poll events to periodically test the light and door sensors.
+    osal_start_timerEx( sapi_TaskID,SENSOR_TASK_EVENT, SENSOR_POLL_INTERVAL);
   }
   else{
-     println("System START FAIL");
+    //Debug info.
+    println("System START FAIL");
   }
 }
 
@@ -311,15 +304,18 @@ void zb_SendDataConfirm( uint8 handle, uint8 status ){
  * @return      none
  */
 void zb_BindConfirm( uint16 commandId, uint8 status ){
+  //Debug info
   print("System Bind confirmed (commandID = ");
   print(itoa(commandId));
   print(" status = ");
   print(itoa(status));
   println(")");
   
+  //If binding to a device failed, we try again.
   if(status != ZB_SUCCESS){
     bindDevice(commandId);
   }
+  //If binding succeeded, we note wich device we are bound to.
   else{
     if(isLampDataCommand(commandId)){
       isLightEndPointBound = TRUE;
@@ -341,6 +337,7 @@ void zb_BindConfirm( uint16 commandId, uint8 status ){
  * @return      none
  */
 void zb_AllowBindConfirm( uint16 source ){
+  //Only debug info.
   print("System Allow Bind confirmed (source = ");
   print(itoa(source));
   println(")");
@@ -380,6 +377,7 @@ void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result ){
  * @return      none
  */
 void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 *pData  ){
+  //Debug info
   print("Network Incoming data (id = ");
   print(itoa(command));
   print(" len = ");
@@ -388,30 +386,39 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
   print(pData);
   println(")");
   
+  //Bind back request from remote device.
+  //These are the same for both devices.
   if(isBindBackRequest(pData)){
     bindDevice(command);
   }
+  //Status request from remote device.
   else if(isStatusRequest(pData)){
+    //Default status.
     uint8 status = 0;
-    
+    //Update the door lock status.
     if(isLockDataCommand(command)){
-      //TODO: Get real door status
+      status = isLockOpen();
     }
+    //Update the lamp status.
     else if(isLampDataCommand(command)){
       status = isLampOn();
     }
+    //Send the status back to remote devce.
     sendStatus(command, status);  
   }
+  //Button pressed notify from remote device.
   else if(isButtonPressedRequest(pData)){
-     if(isLockDataCommand(command)){
-       //TODO: Open/Close door
+    //Butten pressed on lock remote device. 
+    if(isLockDataCommand(command)){
+       toggleLock();
+       sendStatus(command, isLockOpen());
     }
+    //Button pressed on lamp remote device
     else if(isLampDataCommand(command)){
       bool isLampOn = isLightLevelLow();
       sendStatus(command, isLampOn);
       setLamp(isLampOn);
     }
-    
   }
 }
 
@@ -430,12 +437,18 @@ void uartRxCB( uint8 port, uint8 event ){
   (void)event;
 }
 
-
+/******************************************************************************
+ * @fn          reportLightSensor
+ *
+ * @brief       Function periodically called to poll the light sensor and send  
+ *              the new data to the remote if need be.
+ *
+ * @param       none
+ *
+ * @return      none
+ */
 void reportLightSensor(){
-
-   //println("LIGHT SENSOR Reporting");
    bool isLightLevelHigh = !isLightLevelLow();
-   
    //Test if the lamp is on.
    //No need to do anyting if it's alrdy off.
    if(isLampOn()){
@@ -451,4 +464,27 @@ void reportLightSensor(){
    }
 }
 
+/******************************************************************************
+ * @fn          reportLightSensor
+ *
+ * @brief       Function periodically called to poll the lock sensor and send  
+ *              the new data to the remote if need be.
+ *
+ * @param       none
+ *
+ * @return      none
+ */
+void reportLockStatus(){
+  static bool lastLockStatus = -1;
+  bool currentLockStatus = isLockOpen();
+  //Test if status of the lock has changed.
+  if(lastLockStatus != currentLockStatus){
+    //Update the lock status.
+    lastLockStatus = currentLockStatus;
+    //We only need to send if there is a device bound that we can send too.
+    if(isLockEndPointBound){
+       sendStatus(LOCK_DATA_CMD_ID, currentLockStatus);
+    }
+  }
+}
 

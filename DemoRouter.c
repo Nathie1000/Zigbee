@@ -1,8 +1,9 @@
 /**************************************************************************************************
-  Filename:       DemoRouter.c
+  Filename:       DemoSensor.c
 
-  Description:    Router application for the sensor demo utilizing the Simple API.
+  Description:    Sensor application for the sensor demo utilizing the Simple API.
 
+                  The sensor node is a ZigBee end device.
                   The sensor application binds to a gateway and will periodically
                   read temperature and supply voltage from the ADC and send report
                   towards the gateway node.
@@ -46,43 +47,16 @@
 #include "ZComDef.h"
 #include "OSAL.h"
 #include "sapi.h"
-#include "hal_key.h"
-#include "hal_lcd.h"
 #include "hal_led.h"
-#include "hal_adc.h"
-#include "hal_mcu.h"
+#include "hal_key.h"
 #include "hal_uart.h"
-#include "OSAL_NV.h"
 #include "DemoApp.h"
-#include "APS.h"
+#include "Clusters.h"
+#include "Lamp.h"
 
 /******************************************************************************
  * CONSTANTS
  */
-#define REPORT_FAILURE_LIMIT                3
-#define ACK_REQ_INTERVAL                    5 // each 5th packet is sent with ACK request
-
-// Application States
-#define APP_INIT                            0    // Initial state
-#define APP_START                           1    // Sensor has joined network
-#define APP_BIND                            2    // Sensor is in process of binding
-#define APP_REPORT                          4    // Sensor is in reporting state
-
-// Application osal event identifiers
-// Bit mask of events ( from 0x0000 to 0x00FF )
-#define MY_START_EVT                        0x0001
-#define MY_REPORT_EVT                       0x0002
-#define MY_FIND_COLLECTOR_EVT               0x0004
-
-// ADC definitions for CC2430/CC2530 from the hal_adc.c file
-#if defined (HAL_MCU_CC2530)
-#define HAL_ADC_REF_125V    0x00    /* Internal 1.25V Reference */
-#define HAL_ADC_DEC_064     0x00    /* Decimate by 64 : 8-bit resolution */
-#define HAL_ADC_DEC_128     0x10    /* Decimate by 128 : 10-bit resolution */
-#define HAL_ADC_DEC_512     0x30    /* Decimate by 512 : 14-bit resolution */
-#define HAL_ADC_CHN_VDD3    0x0f    /* Input channel: VDD/3 */
-#define HAL_ADC_CHN_TEMP    0x0e    /* Temperature sensor */
-#endif // HAL_MCU_CC2530
 
 /******************************************************************************
  * TYPEDEFS
@@ -91,30 +65,25 @@
 /******************************************************************************
  * LOCAL VARIABLES
  */
-static uint8  appState =          APP_INIT;
-static uint8  reportState =       FALSE;
-
-static uint8 reportFailureNr =    0;
-static uint8 bindRetries =        0;
-
-static uint16 myReportPeriod =    5000;         // milliseconds
-static uint16 myBindRetryDelay =  2000;         // milliseconds
-static uint8 myStartRetryDelay =  10;           // milliseconds
-
-static uint16 parentShortAddr;
 
 /******************************************************************************
  * GLOBAL VARIABLES
  */
 
 // Inputs and Outputs for Sensor device
-#define NUM_OUT_CMD_SENSOR        1
-#define NUM_IN_CMD_SENSOR         0
+#define NUM_OUT_CMD_SENSOR                1
+#define NUM_IN_CMD_SENSOR                 1
 
+// List of output and input commands for Collector device  
+ const cId_t zb_InCmdList[NUM_IN_CMD_SENSOR] =
+{
+  LOCK_DATA_CMD_ID
+};  
+   
 // List of output and input commands for Sensor device
 const cId_t zb_OutCmdList[NUM_OUT_CMD_SENSOR] =
 {
-  SENSOR_REPORT_CMD_ID
+  LOCK_DATA_CMD_ID
 };
 
 // Define SimpleDescriptor for Sensor device
@@ -126,20 +95,14 @@ const SimpleDescriptionFormat_t zb_SimpleDesc =
   DEVICE_VERSION_SENSOR,      //  Device Version
   0,                          //  Reserved
   NUM_IN_CMD_SENSOR,          //  Number of Input Commands
-  (cId_t *) NULL,             //  Input Command List
+  (cId_t *) zb_InCmdList,     //  Input Command List
   NUM_OUT_CMD_SENSOR,         //  Number of Output Commands
   (cId_t *) zb_OutCmdList     //  Output Command List
 };
 
-
 /******************************************************************************
  * LOCAL FUNCTIONS
  */
-
-void uartRxCB( uint8 port, uint8 event );
-static void sendReport(void);
-static int8 readTemp(void);
-static uint8 readVoltage(void);
 
 /*****************************************************************************
  * @fn          zb_HandleOsalEvent
@@ -151,44 +114,21 @@ static uint8 readVoltage(void);
  *
  * @return      none
  */
-void zb_HandleOsalEvent( uint16 event )
-{
-  if( event & SYS_EVENT_MSG )
-  {
-  }
-
-  if( event & ZB_ENTRY_EVENT )
-  {
+void zb_HandleOsalEvent( uint16 event ){
+  if( event & ZB_ENTRY_EVENT ) {
     // blind LED 1 to indicate joining a network
+    initApp();
     HalLedBlink ( HAL_LED_1, 0, 50, 500 );
-
     // Start the device
     zb_StartRequest();
   }
+}
 
-  if ( event & MY_START_EVT )
-  {
-    zb_StartRequest();
-  }
-
-  if ( event & MY_REPORT_EVT )
-  {
-    if ( appState == APP_REPORT )
-    {
-      sendReport();
-      osal_start_timerEx( sapi_TaskID, MY_REPORT_EVT, myReportPeriod );
-    }
-  }
-
-  if ( event & MY_FIND_COLLECTOR_EVT )
-  {
-    // blind LED 2 to indicate discovery and binding
-    HalLedBlink ( HAL_LED_2, 0, 50, 500 );
-
-    appState = APP_BIND;
-    // Find and bind to a collector device
-    zb_BindDevice( TRUE, SENSOR_REPORT_CMD_ID, (uint8 *)NULL );
-  }
+void initApp(void){
+  HalLedSet(HAL_LED_1, HAL_LED_MODE_OFF );
+  HalLedSet(HAL_LED_2, HAL_LED_MODE_OFF );
+  HalLedSet(HAL_LED_3, HAL_LED_MODE_OFF );
+  initLamp(1,2);
 }
 
 /******************************************************************************
@@ -205,44 +145,11 @@ void zb_HandleOsalEvent( uint16 event )
  *
  * @return  none
  */
-void zb_HandleKeys( uint8 shift, uint8 keys )
-{
-  // Shift is used to make each button/switch dual purpose.
-  if ( shift )
-  {
-    if ( keys & HAL_KEY_SW_1 )
-    {
-    }
-    if ( keys & HAL_KEY_SW_2 )
-    {
-    }
-    if ( keys & HAL_KEY_SW_3 )
-    {
-    }
-    if ( keys & HAL_KEY_SW_4 )
-    {
-    }
-  }
-  else
-  {
-    if ( keys & HAL_KEY_SW_1 )
-    {
-      // Start reporting
-      if ( reportState == FALSE ) {
-        osal_set_event( sapi_TaskID, MY_REPORT_EVT );
-        reportState = TRUE;
-        HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
-      }
-    }
-    if ( keys & HAL_KEY_SW_2 )
-    {
-    }
-    if ( keys & HAL_KEY_SW_3 )
-    {
-    }
-    if ( keys & HAL_KEY_SW_4 )
-    {
-    }
+void zb_HandleKeys( uint8 shift, uint8 keys ){
+  //Test for press on key 2.
+  if( keys & HAL_KEY_SW_2 ) {
+    //Send a data request to bound device indicating button pressed.
+    sendButtonPressedRequest(LOCK_DATA_CMD_ID);
   }
 }
 
@@ -258,31 +165,15 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
  *
  * @return      none
  */
-void zb_StartConfirm( uint8 status )
-{
-  // If the device sucessfully started, change state to running
-  if ( status == ZB_SUCCESS )
-  {
-    // Set LED 1 to indicate that node is operational on the network
-    HalLedSet( HAL_LED_1, HAL_LED_MODE_ON );
-
-    // Change application state
-    appState = APP_START;
-
-    // Set event to bind to a collector
-    osal_set_event( sapi_TaskID, MY_FIND_COLLECTOR_EVT );
-
-    // Store parent short address
-    zb_GetDeviceInfo(ZB_INFO_PARENT_SHORT_ADDR, &parentShortAddr);
-
-    // Turn OFF Allow Bind mode infinitly
-    zb_AllowBind( 0x00 );
-    HalLedSet( HAL_LED_2, HAL_LED_MODE_OFF );
-  }
-  else
-  {
-    // Try again later with a delay
-    osal_start_timerEx( sapi_TaskID, MY_START_EVT, myStartRetryDelay );
+void zb_StartConfirm( uint8 status ){
+  //If the device sucessfully started.
+  if ( status == ZB_SUCCESS ) { 
+    //Set LED 1 to indicate that node is operational on the network.
+    HalLedSet(HAL_LED_1, HAL_LED_MODE_ON );
+    //Blink LED 2 to indicate discovery and binding.
+    HalLedBlink( HAL_LED_2, 0, 50, 500 );
+    //Find and bind to a collector device.
+    bindDevice(LOCK_DATA_CMD_ID);
   }
 }
 
@@ -297,33 +188,9 @@ void zb_StartConfirm( uint8 status )
  *
  * @return      none
  */
-void zb_SendDataConfirm( uint8 handle, uint8 status )
-{
-  if( status != ZB_SUCCESS )
-  {
-    if ( ++reportFailureNr >= REPORT_FAILURE_LIMIT )
-    {
-       // Stop reporting
-       osal_stop_timerEx( sapi_TaskID, MY_REPORT_EVT );
-
-       // After failure start reporting automatically when the device
-       // is binded to a new gateway
-       reportState = TRUE;
-
-       // Delete previous binding
-       zb_BindDevice( FALSE, SENSOR_REPORT_CMD_ID, (uint8 *)NULL );
-
-      // Try to bind a new gateway
-       osal_start_timerEx( sapi_TaskID, MY_FIND_COLLECTOR_EVT, myBindRetryDelay );
-       reportFailureNr = 0;
-    }
-  }
-  // status == SUCCESS
-  else
-  {
-    // Reset failure counter
-    reportFailureNr = 0;
-  }
+void zb_SendDataConfirm( uint8 handle, uint8 status ){
+ (void)handle;
+ (void)status;
 }
 
 /******************************************************************************
@@ -337,30 +204,20 @@ void zb_SendDataConfirm( uint8 handle, uint8 status )
  *
  * @return      none
  */
-void zb_BindConfirm( uint16 commandId, uint8 status )
-{
-  if( status == ZB_SUCCESS )
-  {
-    appState = APP_REPORT;
-    HalLedSet( HAL_LED_2, HAL_LED_MODE_OFF );
-
-    // After failure reporting start automatically when the device
-    // is binded to a new gateway
-    if ( reportState )
-    {
-      // Start reporting
-      osal_set_event( sapi_TaskID, MY_REPORT_EVT );
+void zb_BindConfirm( uint16 commandId, uint8 status ){
+  if(isLockDataCommand(commandId)){
+    //Test if bind succeded.
+    if(status == ZB_SUCCESS ) {
+       HalLedSet( HAL_LED_2, HAL_LED_MODE_ON );
+       HalLedBlink(HAL_LED_3, 0, 50, 500 );
+       //Allow this device to bind.
+       zb_AllowBind( 0xFF );
+       //Request to other device to bind to this device.
+       requestBindBack(LOCK_DATA_CMD_ID);
     }
-  }
-  else
-  {
-    if ( ++bindRetries >= 2 ) {
-      // Reset the system
-      zb_SystemReset();
-    }
-    else
-    {
-      osal_start_timerEx( sapi_TaskID, MY_FIND_COLLECTOR_EVT, myBindRetryDelay );
+    else{
+       //Try to bind again.
+       bindDevice(LOCK_DATA_CMD_ID);
     }
   }
 }
@@ -374,9 +231,13 @@ void zb_BindConfirm( uint16 commandId, uint8 status )
  *
  * @return      none
  */
-void zb_AllowBindConfirm( uint16 source )
-{
+void zb_AllowBindConfirm( uint16 source ){
   (void)source;
+  //Turn of bind mode, we only bind to 1 device ever.
+  zb_AllowBind(0x00);
+  HalLedSet( HAL_LED_3, HAL_LED_MODE_ON );
+  //Request the inital status of the lamp.
+  requestStatus(LOCK_DATA_CMD_ID);
 }
 
 /******************************************************************************
@@ -391,8 +252,7 @@ void zb_AllowBindConfirm( uint16 source )
  *
  * @return      none
  */
-void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result )
-{
+void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result ){
   (void)searchType;
   (void)searchKey;
   (void)result;
@@ -412,12 +272,15 @@ void zb_FindDeviceConfirm( uint8 searchType, uint8 *searchKey, uint8 *result )
  *
  * @return      none
  */
-void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 *pData  )
-{
+void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 *pData){
   (void)source;
   (void)command;
   (void)len;
-  (void)pData;
+  //Test data respone.
+  if(isStatusResponse(pData)){
+    //Update the lamp status.
+    setLamp(getStatus(pData));
+  }
 }
 
 /******************************************************************************
@@ -430,139 +293,8 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
  *
  * @return      none
  */
-void uartRxCB( uint8 port, uint8 event )
-{
+void uartRxCB( uint8 port, uint8 event ){
   (void)port;
   (void)event;
 }
 
-/******************************************************************************
- * @fn          sendReport
- *
- * @brief       Send sensor report
- *
- * @param       none
- *
- * @return      none
- */
-static void sendReport(void)
-{
-  uint8 pData[SENSOR_REPORT_LENGTH];
-  static uint8 reportNr = 0;
-  uint8 txOptions;
-
-  // Read and report temperature value
-  pData[SENSOR_TEMP_OFFSET] = readTemp();
-
-  // Read and report voltage value
-  pData[SENSOR_VOLTAGE_OFFSET] = readVoltage();
-
-  pData[SENSOR_PARENT_OFFSET] =  HI_UINT16(parentShortAddr);
-  pData[SENSOR_PARENT_OFFSET + 1] =  LO_UINT16(parentShortAddr);
-
-  // Set ACK request on each ACK_INTERVAL report
-  // If a report failed, set ACK request on next report
-  if ( ++reportNr < ACK_REQ_INTERVAL && reportFailureNr == 0 )
-  {
-    txOptions = AF_TX_OPTIONS_NONE;
-  }
-  else
-  {
-    txOptions = AF_MSG_ACK_REQUEST;
-    reportNr = 0;
-  }
-  // Destination address 0xFFFE: Destination address is sent to previously
-  // established binding for the commandId.
-  zb_SendDataRequest( 0xFFFE, SENSOR_REPORT_CMD_ID, SENSOR_REPORT_LENGTH, pData, 0, txOptions, 0 );
-}
-
-/******************************************************************************
- * @fn          readTemp
- *
- * @brief       read temperature from ADC
- *
- * @param       none
- *
- * @return      temperature
- */
-static int8 readTemp(void)
-{
-  static uint16 voltageAtTemp22;
-  static uint8 bCalibrate = TRUE; // Calibrate the first time the temp sensor is read
-  uint16 value;
-  int8 temp;
-
-  #if defined (HAL_MCU_CC2530)
-  /*
-   * Use the ADC to read the temperature
-   */
-  value = HalReadTemp();
-
-  // Use the 12 MSB of adcValue
-  value >>= 4;
-
-  /*
-   * These parameters are typical values and need to be calibrated
-   * See the datasheet for the appropriate chip for more details
-   * also, the math below may not be very accurate
-   */
-  /* Assume ADC = 1480 at 25C and ADC = 4/C */
-  #define VOLTAGE_AT_TEMP_25        1480
-  #define TEMP_COEFFICIENT          4
-
-  // Calibrate for 22C the first time the temp sensor is read.
-  // This will assume that the demo is started up in temperature of 22C
-  if ( bCalibrate ) {
-    voltageAtTemp22 = value;
-    bCalibrate = FALSE;
-  }
-
-  temp = 22 + ( (value - voltageAtTemp22) / TEMP_COEFFICIENT );
-
-  // Set 0C as minimum temperature, and 100C as max
-  if ( temp >= 100 )
-  {
-    return 100;
-  }
-  else if ( temp <= 0 ) {
-    return 0;
-  }
-  else {
-    return temp;
-  }
-  // Only CC2530 is supported
-  #else
-  return 0;
-  #endif
-}
-
-/******************************************************************************
- * @fn          readVoltage
- *
- * @brief       read voltage from ADC
- *
- * @param       none
- *
- * @return      voltage
- */
-static uint8 readVoltage(void)
-{
-  #if defined (HAL_MCU_CC2530)
-  /*
-   * Use the ADC to read the bus voltage
-   */
-  uint16 value = HalReadTemp();
-
-  // value now contains measurement of Vdd/3
-  // 0 indicates 0V and 32767 indicates 1.25V
-  // voltage = (value*3*1.25)/32767 volts
-  // we will multiply by this by 10 to allow units of 0.1 volts
-  value = value >> 6;   // divide first by 2^6
-  value = (uint16)(value * 37.5);
-  value = value >> 9;   // ...and later by 2^9...to prevent overflow during multiplication
-
-  return value;
-  #else
-  return 0;
-  #endif // CC2530
-}

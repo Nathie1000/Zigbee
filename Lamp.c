@@ -5,11 +5,7 @@ static uint8 lampPort = 0;
 static uint8 lampPin  = 1;
 static bool lampStatus = FALSE;
 
-/* Little explanation about what is happening here.
-*  Some brain damaged idiot found it funny to define the IO function to control the
-*  pins as MACROS. This makes it impossible to create a parameter based function to
-*  control certain pin in- and outputs. Which means the MACRO has to be retyped every
-*  damn time.
+/* MACROS are not variable configurable.
 *  To work around this all the MARCOS have be defined in a swith case, not ideal but it works.
 */
 
