@@ -59,6 +59,7 @@
 #include "Clusters.h"
 #include "Lamp.h"
 #include "LightSensor.h"
+#include "Lock.h"
 
 /******************************************************************************
  * CONSTANTS
@@ -116,6 +117,7 @@
  * LOCAL VARIABLES
  */
 static bool isLightEndPointBound = FALSE;
+static bool isLockEndPointBound = FALSE;
 
 
 /******************************************************************************
@@ -123,6 +125,7 @@ static bool isLightEndPointBound = FALSE;
  */
 
 static void reportLightSensor(void);
+static void reportLockStatus(void);
 
 /******************************************************************************
  * GLOBAL VARIABLES
@@ -214,19 +217,19 @@ void zb_HandleOsalEvent( uint16 event )
  *
  * @return  none
  */
-void zb_HandleKeys( uint8 shift, uint8 keys )
-{
+void zb_HandleKeys( uint8 shift, uint8 keys ){
+  static uint8 x = 0;
+  
   if ( keys & HAL_KEY_SW_1 ){
-    MCU_IO_SET_LOW(0,4);
-    sendStatus(LAMP_DATA_CMD_ID, 0);
+    x = !x;
+    setLock(x);
+    
   }
   
   if ( keys & HAL_KEY_SW_2 ) {
-    sendStatus(LAMP_DATA_CMD_ID, 1);
     uint16 val = HalAdcRead(HAL_ADC_CHANNEL_3, HAL_ADC_RESOLUTION_12);
     print("LDR = ");
     println(itoa(val));
-    
     print("Light level: ");
     println(itoa(isLightLevelLow()));
   }
@@ -245,6 +248,7 @@ void zb_HandleKeys( uint8 shift, uint8 keys )
 void initApp(void){
     initLamp(0,4);
     initLightSensor(3,1000);
+    initLock(0,7,0,5);
 }
 
 /******************************************************************************
@@ -321,7 +325,7 @@ void zb_BindConfirm( uint16 commandId, uint8 status ){
       isLightEndPointBound = TRUE;
     }
     else if(isLockDataCommand(commandId)){
-      //TODO: Do somting if we need to confirm if we're bound.
+      isLockEndPointBound = TRUE;
     }
   }
  
