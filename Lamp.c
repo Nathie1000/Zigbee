@@ -74,3 +74,7 @@ void setLamp(bool onOff){
 bool isLampOn(){
   return lampStatus;
 }
+
+void toggleLamp(void){
+   setLamp(!lampStatus);
+}

@@ -415,9 +415,14 @@ void zb_ReceiveDataIndication( uint16 source, uint16 command, uint16 len, uint8 
     }
     //Button pressed on lamp remote device
     else if(isLampDataCommand(command)){
-      bool isLampOn = isLightLevelLow();
-      sendStatus(command, isLampOn);
-      setLamp(isLampOn);
+      bool isLowLight = isLightLevelLow();
+      if(isLowLight){
+        toggleLamp();
+      }
+      else{
+        setLamp(0);
+      }
+      sendStatus(command, isLampOn());
     }
   }
 }

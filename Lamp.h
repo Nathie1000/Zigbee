@@ -6,5 +6,6 @@
 void initLamp(uint8 port, uint8 pin);
 void setLamp(bool onOff);
 bool isLampOn(void);
+void toggleLamp(void);
 
 #endif // _LAMP_H
